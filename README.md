@@ -32,7 +32,7 @@ The script accepts three main commands: start, stop, and status.
 ### 1. Starting a Tunnel
 
 ```
-tunnel start <name> <type> <port1> <host> <port2> <ssh_user> <ssh_host> <ssh_port>
+tunnel start <name> <type> <port1> <host> <port2> <ssh_user> <ssh_host> [ssh_port]
 ```
 
 #### Parameters:
@@ -44,7 +44,7 @@ tunnel start <name> <type> <port1> <host> <port2> <ssh_user> <ssh_host> <ssh_por
 - port2: The target port on the remote host/container.
 - ssh_user: The username for the SSH connection.
 - ssh_host: The IP or hostname of the SSH server acting as the gateway.
-- ssh_port: The port of the SSH server (usually 22).
+- ssh_port: The port of the SSH server (default 22).
 
 ### 2. Stopping a Tunnel
 
@@ -66,8 +66,12 @@ This will list all currently tracked tunnels and their active PIDs.
 
 You have a web app running inside a remote Docker container on 172.17.0.5:80. You want to access it on your local machine and share it with your local network on port 8080.
 
+```Default ssh port
+tunnel start myapp -L 8080 172.17.0.5 80 myuser myserver.com
 ```
-tunnel start myapp -L 8080 172.17.0.5 80 myuser myserver.com 22
+
+```Custom ssh port
+tunnel start myapp -L 8080 172.17.0.5 80 myuser myserver.com 8022
 ```
 
 Result: You (and anyone on your local Wi-Fi) can access the remote container by going to http://<your-local-ip>:8080.
@@ -76,8 +80,12 @@ Result: You (and anyone on your local Wi-Fi) can access the remote container by 
 
 You are running a local Node.js server on port 3000 and want to securely expose it on a remote VPS on port 9000.
 
+```Default ssh port
+tunnel start local-dev -R 9000 localhost 3000 vpsuser myvps.com
 ```
-tunnel start local-dev -R 9000 localhost 3000 vpsuser myvps.com 22
+
+```Custom ssh port
+tunnel start local-dev -R 9000 localhost 3000 vpsuser myvps.com 8022
 ```
 
 ## License
