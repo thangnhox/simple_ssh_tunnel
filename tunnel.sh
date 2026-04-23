@@ -86,8 +86,8 @@ tunnel_start() {
         exit 1
     fi
 
-    # Save tracking details in the format: PID:TYPE:PORT1:HOST:PORT2
-    echo "$pid:$type:$port1:$host:$port2" > "$pid_file"
+    # Save tracking details in the format: PID:TYPE:PORT1:HOST:PORT2:SSH_HOST:SSH_PORT
+    echo "$pid:$type:$port1:$host:$port2:$sshhost:$ssh_port" > "$pid_file"
     
     # Start a background wrapper to watch the SSH process and invalidate the PID file if it dies
     (
@@ -136,7 +136,7 @@ tunnel_status() {
         local name=$(basename "$f" .pid)
         
         # Parse the saved details
-        IFS=':' read -r pid type port1 host port2 < "$f"
+        IFS=':' read -r pid type port1 host port2 sshhost ssh_port < "$f"
         
         local status_str="RUNNING"
         if ! ps -p "$pid" > /dev/null 2>&1; then
@@ -160,7 +160,12 @@ tunnel_status() {
             else
                 echo "  $name (stale PID: $pid)"
             fi
-            echo "    -> Type: $type ($type_desc), Src Port: $port1, Dst IP: $host, Dst Port: $port2"
+            
+            local details_str="    -> Type: $type ($type_desc), Src Port: $port1, Dst IP: $host, Dst Port: $port2"
+            if [ -n "$sshhost" ] && [ -n "$ssh_port" ]; then
+                details_str="$details_str, SSH: $sshhost:$ssh_port"
+            fi
+            echo "$details_str"
         fi
         
         found=1
