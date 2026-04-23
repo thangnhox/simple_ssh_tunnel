@@ -11,6 +11,10 @@ Instead of manually running complex SSH port-forwarding commands and hunting for
 - LAN Ready: Local (-L) tunnels automatically bind to 0.0.0.0, allowing other devices on your local Wi-Fi/LAN to access the forwarded ports.
 - Multi-Directional: Supports both Local (-L) and Remote (-R) port forwarding.
 
+## Note
+
+- This script only works with `Public Key Authentication` without `Passphrase`
+
 ## Installation
 
 1. Save the script to a location in your $PATH (e.g., /usr/local/bin/ or /opt/bin/).
