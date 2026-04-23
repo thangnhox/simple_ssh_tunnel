@@ -10,9 +10,9 @@ usage() {
     echo ""
     echo "  Parameters:"
     echo "    <type>      : -L (Local forward) or -R (Remote forward)"
-    echo "    <port1>     : Port to listen on (Local for -L, Remote for -R)"
-    echo "    <host>      : Target host/IP (e.g., Container IP 172.17.0.5 or localhost)"
-    echo "    <port2>     : Target port"
+    echo "    <port1>     : Port to listen on (Src port: Local for -L, Remote for -R)"
+    echo "    <host>      : Target host/IP (Dst IP: e.g., Container IP 172.17.0.5 or localhost)"
+    echo "    <port2>     : Target port (Dst port)"
     echo ""
     echo "  Examples:"
     echo "    Forward container to local network (for multiple clients):"
@@ -35,9 +35,12 @@ tunnel_start() {
     local pid_file="$PID_DIR/$name.pid"
 
     if [ -f "$pid_file" ]; then
+        # Read the first field (PID) using colon as the delimiter
+        IFS=':' read -r saved_pid _ < "$pid_file"
+        
         # Check if the process is actually still running
-        if ps -p "$(cat "$pid_file")" > /dev/null 2>&1; then
-            echo "Tunnel '$name' is already running (PID $(cat "$pid_file"))."
+        if ps -p "$saved_pid" > /dev/null 2>&1; then
+            echo "Tunnel '$name' is already running (PID $saved_pid)."
             exit 1
         else
             echo "Removing stale PID file for '$name'..."
@@ -78,7 +81,8 @@ tunnel_start() {
         exit 1
     fi
 
-    echo "$pid" > "$pid_file"
+    # Save tracking details in the format: PID:TYPE:PORT1:HOST:PORT2
+    echo "$pid:$type:$port1:$host:$port2" > "$pid_file"
     echo "Tunnel '$name' started successfully (PID $pid)."
 }
 
@@ -91,7 +95,9 @@ tunnel_stop() {
         exit 1
     fi
 
-    local pid=$(cat "$pid_file")
+    # Extract just the PID from the saved string
+    IFS=':' read -r pid _ < "$pid_file"
+    
     echo "Stopping tunnel '$name' (PID $pid)..."
     kill "$pid" 2>/dev/null
     rm -f "$pid_file"
@@ -101,16 +107,39 @@ tunnel_stop() {
 tunnel_status() {
     echo "Active tunnels:"
     local found=0
+    
     for f in "$PID_DIR"/*.pid; do
         [ -e "$f" ] || continue
         local name=$(basename "$f" .pid)
-        local pid=$(cat "$f")
         
-        if ps -p "$pid" > /dev/null 2>&1; then
-            echo "  $name (PID $pid)"
-        else
-            echo "  $name (stale PID: $pid)"
+        # Parse the saved details
+        IFS=':' read -r pid type port1 host port2 < "$f"
+        
+        local status_str="RUNNING"
+        if ! ps -p "$pid" > /dev/null 2>&1; then
+            status_str="STALE"
         fi
+
+        if [ -z "$type" ]; then
+            # Legacy format support (file only contains the PID)
+            if [ "$status_str" = "RUNNING" ]; then
+                echo "  $name (PID $pid) - Legacy format (run stop/start to update tracking details)"
+            else
+                echo "  $name (stale PID: $pid)"
+            fi
+        else
+            # New format with tracking details
+            local type_desc="Local"
+            [ "$type" = "-R" ] && type_desc="Remote"
+
+            if [ "$status_str" = "RUNNING" ]; then
+                echo "  $name (PID $pid)"
+            else
+                echo "  $name (stale PID: $pid)"
+            fi
+            echo "    -> Type: $type ($type_desc), Src Port: $port1, Dst IP: $host, Dst Port: $port2"
+        fi
+        
         found=1
     done
     
