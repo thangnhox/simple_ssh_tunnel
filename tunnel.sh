@@ -66,15 +66,52 @@ tunnel_start() {
         usage
     fi
 
-    # Run SSH in the background using '&' instead of '-f' 
-    # Redirect stdout and stderr to the log file to prevent terminal clutter
-    # This allows us to reliably capture the exact PID using '$!'
-    ssh -p "$ssh_port" -N \
-        "$type" "$forward_spec" \
-        "${user}@${sshhost}" \
-        -o ExitOnForwardFailure=yes > "$log_file" 2>&1 &
-    
-    local pid=$!
+    # Clear previous log
+    > "$log_file"
+
+    # Start a background wrapper that acts as the parent of the ssh process.
+    # It spawns ssh, saves the PID, waits for it to exit, and then cleans up.
+    # This avoids polling loops.
+    (
+        ssh -p "$ssh_port" -N \
+            "$type" "$forward_spec" \
+            "${user}@${sshhost}" \
+            -o ExitOnForwardFailure=yes > "$log_file" 2>&1 &
+        
+        local ssh_pid=$!
+        
+        # Save tracking details in the format: PID:TYPE:PORT1:HOST:PORT2:SSH_HOST:SSH_PORT
+        echo "$ssh_pid:$type:$port1:$host:$port2:$sshhost:$ssh_port" > "$pid_file"
+        
+        # Wait for the child SSH process to terminate natively
+        wait "$ssh_pid"
+        
+        # Process has terminated. Remove the PID file if it still belongs to this specific process.
+        if [ -f "$pid_file" ]; then
+            IFS=':' read -r current_pid _ < "$pid_file"
+            if [ "$current_pid" = "$ssh_pid" ]; then
+                rm -f "$pid_file"
+            fi
+        fi
+    ) &
+
+    # Wait up to 2 seconds for the wrapper to create the PID file
+    local wait_time=0
+    while [ ! -f "$pid_file" ] && [ $wait_time -lt 20 ]; do
+        sleep 0.1
+        wait_time=$((wait_time + 1))
+    done
+
+    # If it failed to create the file, or if it already cleaned it up due to immediate failure
+    if [ ! -f "$pid_file" ]; then
+        echo "Failed to start tunnel. Check your SSH connection, authentication, and ports."
+        echo "See log for details: $log_file"
+        tail -n 3 "$log_file" | sed 's/^/  > /'
+        exit 1
+    fi
+
+    local pid
+    IFS=':' read -r pid _ < "$pid_file"
 
     # Wait a brief moment to ensure SSH didn't immediately fail (e.g., bad port/auth)
     sleep 1
@@ -85,26 +122,6 @@ tunnel_start() {
         tail -n 3 "$log_file" | sed 's/^/  > /'
         exit 1
     fi
-
-    # Save tracking details in the format: PID:TYPE:PORT1:HOST:PORT2:SSH_HOST:SSH_PORT
-    echo "$pid:$type:$port1:$host:$port2:$sshhost:$ssh_port" > "$pid_file"
-    
-    # Start a background wrapper to watch the SSH process and invalidate the PID file if it dies
-    (
-        # Loop until the process is no longer running
-        # kill -0 is a lightweight shell builtin to check process existence
-        while kill -0 "$pid" 2>/dev/null; do
-            sleep 2
-        done
-        
-        # Process has terminated. Remove the PID file if it still belongs to this specific process.
-        if [ -f "$pid_file" ]; then
-            IFS=':' read -r current_pid _ < "$pid_file"
-            if [ "$current_pid" = "$pid" ]; then
-                rm -f "$pid_file"
-            fi
-        fi
-    ) >/dev/null 2>&1 &
 
     echo "Tunnel '$name' started successfully (PID $pid)."
 }
