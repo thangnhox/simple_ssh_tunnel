@@ -18,6 +18,8 @@ usage() {
     echo "  Examples:"
     echo "    Forward container to local network (for multiple clients):"
     echo "    tunnel start myapp -L 8080 172.17.0.5 80 myuser myserver.com"
+    echo "    Forward IPv6 target:"
+    echo "    tunnel start myv6app -L 8080 2001:db8::1 80 myuser myserver.com"
     echo ""
     echo "  tunnel stop <name>"
     echo "  tunnel status"
@@ -38,8 +40,13 @@ tunnel_start() {
     local log_file="$PID_DIR/$name.log"
 
     if [ -f "$pid_file" ]; then
-        # Read the first field (PID) using colon as the delimiter
-        IFS=':' read -r saved_pid _ < "$pid_file"
+        # Read the first field (PID) using pipe as the new delimiter
+        IFS='|' read -r saved_pid _ < "$pid_file"
+        
+        # Fallback for old colon-delimited format
+        if echo "$saved_pid" | grep -q ":"; then
+            IFS=':' read -r saved_pid _ < "$pid_file"
+        fi
         
         # Check if the process is actually still running
         if ps -p "$saved_pid" > /dev/null 2>&1; then
@@ -52,16 +59,27 @@ tunnel_start() {
     fi
 
     local forward_spec=""
+    local host_fwd="$host"
+
+    # Format IPv6 addresses with square brackets for SSH forwarding
+    case "$host_fwd" in
+        *:*)
+            case "$host_fwd" in
+                \[*\]) ;; # Already has brackets
+                *) host_fwd="[$host_fwd]" ;;
+            esac
+            ;;
+    esac
 
     # Set up the forward spec based on explicit type (-L or -R)
     if [ "$type" = "-L" ] || [ "$type" = "L" ]; then
         type="-L"
-        # 0.0.0.0 allows other clients on your network to connect
-        forward_spec="0.0.0.0:${port1}:${host}:${port2}"
+        # '*' allows other clients on your network to connect (binds to both IPv4 and IPv6)
+        forward_spec="*:${port1}:${host_fwd}:${port2}"
         echo "Starting LOCAL (-L) tunnel '$name' to $host:$port2..."
     elif [ "$type" = "-R" ] || [ "$type" = "R" ]; then
         type="-R"
-        forward_spec="${port1}:${host}:${port2}"
+        forward_spec="${port1}:${host_fwd}:${port2}"
         echo "Starting REMOTE (-R) tunnel '$name' to $host:$port2..."
     else
         echo "Error: Type must be -L or -R"
@@ -82,15 +100,20 @@ tunnel_start() {
         
         local ssh_pid=$!
         
-        # Save tracking details in the format: PID:TYPE:PORT1:HOST:PORT2:SSH_HOST:SSH_PORT
-        echo "$ssh_pid:$type:$port1:$host:$port2:$sshhost:$ssh_port" > "$pid_file"
+        # Save tracking details using pipe (|) format to prevent breaking on IPv6 colons:
+        # PID|TYPE|PORT1|HOST|PORT2|SSH_HOST|SSH_PORT
+        echo "$ssh_pid|$type|$port1|$host|$port2|$sshhost|$ssh_port" > "$pid_file"
         
         # Wait for the child SSH process to terminate natively
         wait "$ssh_pid"
         
         # Process has terminated. Remove the PID file if it still belongs to this specific process.
         if [ -f "$pid_file" ]; then
-            IFS=':' read -r current_pid _ < "$pid_file"
+            IFS='|' read -r current_pid _ < "$pid_file"
+            if echo "$current_pid" | grep -q ":"; then
+                IFS=':' read -r current_pid _ < "$pid_file"
+            fi
+
             if [ "$current_pid" = "$ssh_pid" ]; then
                 rm -f "$pid_file"
             fi
@@ -113,7 +136,10 @@ tunnel_start() {
     fi
 
     local pid
-    IFS=':' read -r pid _ < "$pid_file"
+    IFS='|' read -r pid _ < "$pid_file"
+    if echo "$pid" | grep -q ":"; then
+        IFS=':' read -r pid _ < "$pid_file"
+    fi
 
     # Wait a brief moment to ensure SSH didn't immediately fail (e.g., bad port/auth)
     sleep 1
@@ -138,7 +164,10 @@ tunnel_stop() {
     fi
 
     # Extract just the PID from the saved string
-    IFS=':' read -r pid _ < "$pid_file"
+    IFS='|' read -r pid _ < "$pid_file"
+    if echo "$pid" | grep -q ":"; then
+        IFS=':' read -r pid _ < "$pid_file"
+    fi
     
     echo "Stopping tunnel '$name' (PID $pid)..."
     kill "$pid" 2>/dev/null
@@ -155,7 +184,12 @@ tunnel_status() {
         local name=$(basename "$f" .pid)
         
         # Parse the saved details
-        IFS=':' read -r pid type port1 host port2 sshhost ssh_port < "$f"
+        IFS='|' read -r pid type port1 host port2 sshhost ssh_port < "$f"
+        
+        # Legacy format support: Fallback to colon delimiter for older tracking files
+        if [ -z "$type" ] && echo "$pid" | grep -q ":"; then
+            IFS=':' read -r pid type port1 host port2 sshhost ssh_port < "$f"
+        fi
         
         local status_str="RUNNING"
         if ! ps -p "$pid" > /dev/null 2>&1; then
