@@ -22,6 +22,7 @@ usage() {
     echo "    tunnel start myv6app -L 8080 2001:db8::1 80 myuser myserver.com"
     echo ""
     echo "  tunnel stop <name>"
+    echo "  tunnel restart <name>"
     echo "  tunnel status"
     exit 1
 }
@@ -101,8 +102,8 @@ tunnel_start() {
         local ssh_pid=$!
         
         # Save tracking details using pipe (|) format to prevent breaking on IPv6 colons:
-        # PID|TYPE|PORT1|HOST|PORT2|SSH_HOST|SSH_PORT
-        echo "$ssh_pid|$type|$port1|$host|$port2|$sshhost|$ssh_port" > "$pid_file"
+        # PID|TYPE|PORT1|HOST|PORT2|USER|SSH_HOST|SSH_PORT
+        echo "$ssh_pid|$type|$port1|$host|$port2|$user|$sshhost|$ssh_port" > "$pid_file"
         
         # Wait for the child SSH process to terminate natively
         wait "$ssh_pid"
@@ -175,6 +176,50 @@ tunnel_stop() {
     echo "Tunnel '$name' stopped."
 }
 
+tunnel_restart() {
+    local name="$1"
+    local pid_file="$PID_DIR/$name.pid"
+
+    if [ ! -f "$pid_file" ]; then
+        echo "Tunnel '$name' not found. Cannot restart."
+        exit 1
+    fi
+
+    # Parse the saved details
+    IFS='|' read -r pid type port1 host port2 user sshhost ssh_port < "$pid_file"
+    
+    # Fallback for format without user (before the restart feature was added)
+    if [ -z "$ssh_port" ] && [ -n "$sshhost" ]; then
+        ssh_port="$sshhost"
+        sshhost="$user"
+        user=""
+    fi
+
+    # Legacy colon format check (just in case)
+    if [ -z "$type" ] && echo "$pid" | grep -q ":"; then
+        IFS=':' read -r pid type port1 host port2 sshhost ssh_port < "$pid_file"
+        user=""
+    fi
+
+    if [ -z "$type" ] || [ -z "$port1" ] || [ -z "$host" ] || [ -z "$port2" ] || [ -z "$sshhost" ]; then
+        echo "Error: Saved state for '$name' is incomplete. Please start it manually."
+        exit 1
+    fi
+
+    if [ -z "$user" ]; then
+        echo "Error: Old state file detected without SSH user. Please start it manually once to update."
+        exit 1
+    fi
+
+    echo "Restarting tunnel '$name'..."
+    tunnel_stop "$name"
+    
+    # Wait a moment to ensure the ports are fully unbound before re-binding
+    sleep 1
+    
+    tunnel_start "$name" "$type" "$port1" "$host" "$port2" "$user" "$sshhost" "$ssh_port"
+}
+
 tunnel_status() {
     echo "Active tunnels:"
     local found=0
@@ -184,11 +229,19 @@ tunnel_status() {
         local name=$(basename "$f" .pid)
         
         # Parse the saved details
-        IFS='|' read -r pid type port1 host port2 sshhost ssh_port < "$f"
+        IFS='|' read -r pid type port1 host port2 user sshhost ssh_port < "$f"
         
+        # Fallback for older formats without the user parameter
+        if [ -z "$ssh_port" ] && [ -n "$sshhost" ]; then
+             ssh_port="$sshhost"
+             sshhost="$user"
+             user=""
+        fi
+
         # Legacy format support: Fallback to colon delimiter for older tracking files
         if [ -z "$type" ] && echo "$pid" | grep -q ":"; then
             IFS=':' read -r pid type port1 host port2 sshhost ssh_port < "$f"
+            user=""
         fi
         
         local status_str="RUNNING"
@@ -216,7 +269,9 @@ tunnel_status() {
             
             local details_str="    -> Type: $type ($type_desc), Src Port: $port1, Dst IP: $host, Dst Port: $port2"
             if [ -n "$sshhost" ] && [ -n "$ssh_port" ]; then
-                details_str="$details_str, SSH: $sshhost:$ssh_port"
+                local user_str=""
+                [ -n "$user" ] && user_str="${user}@"
+                details_str="$details_str, SSH: ${user_str}${sshhost}:$ssh_port"
             fi
             echo "$details_str"
         fi
@@ -237,6 +292,7 @@ fi
 case "$1" in
     start) tunnel_start "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" ;;
     stop) tunnel_stop "$2" ;;
+    restart) tunnel_restart "$2" ;;
     status) tunnel_status ;;
     *) usage ;;
 esac
