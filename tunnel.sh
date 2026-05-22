@@ -50,7 +50,10 @@ tunnel_start() {
         fi
         
         # Check if the process is actually still running
-        if ps -p "$saved_pid" > /dev/null 2>&1; then
+        if [ "$saved_pid" = "DEAD" ]; then
+            echo "Removing DEAD tracking file for '$name'..."
+            rm -f "$pid_file"
+        elif ps -p "$saved_pid" > /dev/null 2>&1; then
             echo "Tunnel '$name' is already running (PID $saved_pid)."
             exit 1
         else
@@ -116,7 +119,8 @@ tunnel_start() {
             fi
 
             if [ "$current_pid" = "$ssh_pid" ]; then
-                rm -f "$pid_file"
+                # Process terminated unexpectedly. Mark the tunnel as DEAD instead of removing tracking file.
+                echo "DEAD|$type|$port1|$host|$port2|$user|$sshhost|$ssh_port" > "$pid_file"
             fi
         fi
     ) &
@@ -171,8 +175,11 @@ tunnel_stop() {
     fi
     
     echo "Stopping tunnel '$name' (PID $pid)..."
-    kill "$pid" 2>/dev/null
+    # Remove the file first to prevent the background wrapper from marking it DEAD during intentional stop
     rm -f "$pid_file"
+    if [ "$pid" != "DEAD" ]; then
+        kill "$pid" 2>/dev/null
+    fi
     echo "Tunnel '$name' stopped."
 }
 
@@ -245,7 +252,9 @@ tunnel_status() {
         fi
         
         local status_str="RUNNING"
-        if ! ps -p "$pid" > /dev/null 2>&1; then
+        if [ "$pid" = "DEAD" ]; then
+            status_str="DEAD"
+        elif ! ps -p "$pid" > /dev/null 2>&1; then
             status_str="STALE"
         fi
 
@@ -253,6 +262,8 @@ tunnel_status() {
             # Legacy format support (file only contains the PID)
             if [ "$status_str" = "RUNNING" ]; then
                 echo "  $name (PID $pid) - Legacy format (run stop/start to update tracking details)"
+            elif [ "$status_str" = "DEAD" ]; then
+                echo "  $name (DEAD)"
             else
                 echo "  $name (stale PID: $pid)"
             fi
@@ -263,6 +274,8 @@ tunnel_status() {
 
             if [ "$status_str" = "RUNNING" ]; then
                 echo "  $name (PID $pid)"
+            elif [ "$status_str" = "DEAD" ]; then
+                echo "  $name (DEAD)"
             else
                 echo "  $name (stale PID: $pid)"
             fi
