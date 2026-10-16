@@ -2,12 +2,13 @@
 
 A lightweight, dependency-free shell script to create and manage persistent SSH tunnels in the background.
 
-Instead of manually running complex SSH port-forwarding commands and hunting for process IDs (PIDs) to kill them later, this script wraps the process into simple start, stop, and status commands. It is especially useful for securely exposing remote Docker containers to your local network.
+Instead of manually running complex SSH port-forwarding commands and hunting for process IDs (PIDs) to kill them later, this script wraps the process into simple start, stop, restart, remove, and status commands. It is especially useful for securely exposing remote Docker containers to your local network.
 
 ## Features
 
-- Easy Management: Start and stop tunnels by a friendly <name>.
+- Easy Management: Start, stop, restart, and remove tunnels by a friendly `<name>`.
 - Smart PID Tracking: Saves PIDs to \~/.ssh_tunnels/ and automatically cleans up stale files if a tunnel crashes.
+- Persistent Configuration: Stopping a tunnel preserves its configuration so you can start or restart it later without re-entering parameters.
 - LAN Ready: Local (-L) tunnels automatically bind to 0.0.0.0, allowing other devices on your local Wi-Fi/LAN to access the forwarded ports.
 - Multi-Directional: Supports both Local (-L) and Remote (-R) port forwarding.
 
@@ -27,12 +28,20 @@ sudo chmod +x /usr/local/bin/tunnel
 
 ## Usage
 
-The script accepts three main commands: start, stop, and status.
+The script accepts five main commands: `start`, `stop`, `restart`, `remove`, and `status`.
 
 ### 1. Starting a Tunnel
 
+To create and start a new tunnel:
+
 ```
 tunnel start <name> <type> <port1> <host> <port2> <ssh_user> <ssh_host> [ssh_port]
+```
+
+To start an existing stopped tunnel using its saved configuration:
+
+```
+tunnel start <name>
 ```
 
 #### Parameters:
@@ -48,17 +57,35 @@ tunnel start <name> <type> <port1> <host> <port2> <ssh_user> <ssh_host> [ssh_por
 
 ### 2. Stopping a Tunnel
 
+Stops the running tunnel process but keeps its configuration tracked as `STOPPED`:
+
 ```
 tunnel stop <name>
 ```
 
-### 3. Checking Tunnel Status
+### 3. Restarting a Tunnel
+
+Restarts a running or stopped tunnel using its saved configuration:
+
+```
+tunnel restart <name>
+```
+
+### 4. Removing a Tunnel
+
+Stops the tunnel (if running) and deletes its tracking and log files completely:
+
+```
+tunnel remove <name>
+```
+
+### 5. Checking Tunnel Status
 
 ```
 tunnel status
 ```
 
-This will list all currently tracked tunnels and their active PIDs.
+This will list all currently tracked tunnels, their status (`RUNNING` with PID, `STOPPED`, or `DEAD`), and port forwarding details.
 
 ## Examples
 
@@ -90,4 +117,4 @@ tunnel start local-dev -R 9000 localhost 3000 vpsuser myvps.com 8022
 
 ## License
 
-This project is released under the CC0-1.0 (Creative Commons Zero v1.0 Universal) license. You can copy, modify, distribute and perform the work, even for commercial purposes, all without asking permission.
+This project is released under the BSD Zero Clause License (0BSD). You can copy, modify, distribute and perform the work, even for commercial purposes, all without asking permission.

@@ -7,6 +7,7 @@ mkdir -p "$PID_DIR"
 usage() {
     echo "Usage:"
     echo "  tunnel start <name> <type> <port1> <host> <port2> <ssh_user> <ssh_host> [ssh_port]"
+    echo "  tunnel start <name>"
     echo ""
     echo "  Parameters:"
     echo "    <type>      : -L (Local forward) or -R (Remote forward)"
@@ -23,6 +24,7 @@ usage() {
     echo ""
     echo "  tunnel stop <name>"
     echo "  tunnel restart <name>"
+    echo "  tunnel remove <name>"
     echo "  tunnel status"
     exit 1
 }
@@ -40,6 +42,45 @@ tunnel_start() {
     local pid_file="$PID_DIR/$name.pid"
     local log_file="$PID_DIR/$name.log"
 
+    if [ -z "$name" ]; then
+        usage
+    fi
+
+    # If only name is provided, load parameters from saved state
+    if [ -z "$type" ]; then
+        if [ ! -f "$pid_file" ]; then
+            echo "Tunnel '$name' not found."
+            exit 1
+        fi
+
+        IFS='|' read -r saved_pid type port1 host port2 user sshhost ssh_port < "$pid_file"
+
+        # Fallback for older formats without the user parameter
+        if [ -z "$ssh_port" ] && [ -n "$sshhost" ]; then
+            ssh_port="$sshhost"
+            sshhost="$user"
+            user=""
+        fi
+
+        # Legacy colon format check
+        if [ -z "$type" ] && echo "$saved_pid" | grep -q ":"; then
+            IFS=':' read -r saved_pid type port1 host port2 sshhost ssh_port < "$pid_file"
+            user=""
+        fi
+
+        if [ -z "$type" ] || [ -z "$port1" ] || [ -z "$host" ] || [ -z "$port2" ] || [ -z "$sshhost" ]; then
+            echo "Error: Saved state for '$name' is incomplete. Please start it manually."
+            exit 1
+        fi
+
+        if [ -z "$user" ]; then
+            echo "Error: Old state file detected without SSH user. Please start it manually once to update."
+            exit 1
+        fi
+
+        [ -z "$ssh_port" ] && ssh_port="22"
+    fi
+
     if [ -f "$pid_file" ]; then
         # Read the first field (PID) using pipe as the new delimiter
         IFS='|' read -r saved_pid _ < "$pid_file"
@@ -50,7 +91,9 @@ tunnel_start() {
         fi
         
         # Check if the process is actually still running
-        if [ "$saved_pid" = "DEAD" ]; then
+        if [ "$saved_pid" = "STOPPED" ]; then
+            rm -f "$pid_file"
+        elif [ "$saved_pid" = "DEAD" ]; then
             echo "Removing DEAD tracking file for '$name'..."
             rm -f "$pid_file"
         elif ps -p "$saved_pid" > /dev/null 2>&1; then
@@ -163,6 +206,55 @@ tunnel_stop() {
     local name="$1"
     local pid_file="$PID_DIR/$name.pid"
 
+    if [ -z "$name" ]; then
+        usage
+    fi
+
+    if [ ! -f "$pid_file" ]; then
+        echo "Tunnel '$name' not found."
+        exit 1
+    fi
+
+    # Parse the saved details
+    IFS='|' read -r pid type port1 host port2 user sshhost ssh_port < "$pid_file"
+    if echo "$pid" | grep -q ":"; then
+        IFS=':' read -r pid type port1 host port2 sshhost ssh_port < "$pid_file"
+        user=""
+    fi
+
+    if [ "$pid" = "STOPPED" ]; then
+        echo "Tunnel '$name' is already stopped."
+        return 0
+    fi
+
+    if [ "$pid" != "DEAD" ] && ps -p "$pid" > /dev/null 2>&1; then
+        echo "Stopping tunnel '$name' (PID $pid)..."
+    else
+        echo "Stopping tunnel '$name'..."
+    fi
+
+    # Update tracking file with STOPPED before killing the process so the wrapper does not mark it DEAD
+    if [ -n "$type" ]; then
+        echo "STOPPED|$type|$port1|$host|$port2|$user|$sshhost|$ssh_port" > "$pid_file"
+    else
+        echo "STOPPED" > "$pid_file"
+    fi
+
+    if [ "$pid" != "DEAD" ] && [ "$pid" != "STOPPED" ]; then
+        kill "$pid" 2>/dev/null
+    fi
+    echo "Tunnel '$name' stopped."
+}
+
+tunnel_remove() {
+    local name="$1"
+    local pid_file="$PID_DIR/$name.pid"
+    local log_file="$PID_DIR/$name.log"
+
+    if [ -z "$name" ]; then
+        usage
+    fi
+
     if [ ! -f "$pid_file" ]; then
         echo "Tunnel '$name' not found."
         exit 1
@@ -173,19 +265,28 @@ tunnel_stop() {
     if echo "$pid" | grep -q ":"; then
         IFS=':' read -r pid _ < "$pid_file"
     fi
-    
-    echo "Stopping tunnel '$name' (PID $pid)..."
-    # Remove the file first to prevent the background wrapper from marking it DEAD during intentional stop
-    rm -f "$pid_file"
-    if [ "$pid" != "DEAD" ]; then
+
+    if [ "$pid" != "DEAD" ] && [ "$pid" != "STOPPED" ] && ps -p "$pid" > /dev/null 2>&1; then
+        echo "Stopping and removing tunnel '$name' (PID $pid)..."
+    else
+        echo "Removing tunnel '$name'..."
+    fi
+
+    # Remove the file first to prevent the background wrapper from marking it DEAD during intentional removal
+    rm -f "$pid_file" "$log_file"
+    if [ "$pid" != "DEAD" ] && [ "$pid" != "STOPPED" ]; then
         kill "$pid" 2>/dev/null
     fi
-    echo "Tunnel '$name' stopped."
+    echo "Tunnel '$name' removed."
 }
 
 tunnel_restart() {
     local name="$1"
     local pid_file="$PID_DIR/$name.pid"
+
+    if [ -z "$name" ]; then
+        usage
+    fi
 
     if [ ! -f "$pid_file" ]; then
         echo "Tunnel '$name' not found. Cannot restart."
@@ -217,6 +318,8 @@ tunnel_restart() {
         echo "Error: Old state file detected without SSH user. Please start it manually once to update."
         exit 1
     fi
+
+    [ -z "$ssh_port" ] && ssh_port="22"
 
     echo "Restarting tunnel '$name'..."
     tunnel_stop "$name"
@@ -252,7 +355,9 @@ tunnel_status() {
         fi
         
         local status_str="RUNNING"
-        if [ "$pid" = "DEAD" ]; then
+        if [ "$pid" = "STOPPED" ]; then
+            status_str="STOPPED"
+        elif [ "$pid" = "DEAD" ]; then
             status_str="DEAD"
         elif ! ps -p "$pid" > /dev/null 2>&1; then
             status_str="STALE"
@@ -261,7 +366,9 @@ tunnel_status() {
         if [ -z "$type" ]; then
             # Legacy format support (file only contains the PID)
             if [ "$status_str" = "RUNNING" ]; then
-                echo "  $name (PID $pid) - Legacy format (run stop/start to update tracking details)"
+                echo "  $name (PID $pid) - Legacy format (run remove/start to update tracking details)"
+            elif [ "$status_str" = "STOPPED" ]; then
+                echo "  $name (STOPPED)"
             elif [ "$status_str" = "DEAD" ]; then
                 echo "  $name (DEAD)"
             else
@@ -274,6 +381,8 @@ tunnel_status() {
 
             if [ "$status_str" = "RUNNING" ]; then
                 echo "  $name (PID $pid)"
+            elif [ "$status_str" = "STOPPED" ]; then
+                echo "  $name (STOPPED)"
             elif [ "$status_str" = "DEAD" ]; then
                 echo "  $name (DEAD)"
             else
@@ -298,14 +407,25 @@ tunnel_status() {
 }
 
 # Ensure minimum arguments are provided for 'start'
-if [ "$1" = "start" ] && [ "$#" -lt 8 ]; then
-    usage
+if [ "$1" = "start" ]; then
+    if [ "$#" -eq 2 ]; then
+        :
+    elif [ "$#" -lt 8 ]; then
+        usage
+    fi
 fi
 
 case "$1" in
-    start) tunnel_start "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" ;;
+    start)
+        if [ "$#" -eq 2 ]; then
+            tunnel_start "$2"
+        else
+            tunnel_start "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+        fi
+        ;;
     stop) tunnel_stop "$2" ;;
     restart) tunnel_restart "$2" ;;
+    remove) tunnel_remove "$2" ;;
     status) tunnel_status ;;
     *) usage ;;
 esac
